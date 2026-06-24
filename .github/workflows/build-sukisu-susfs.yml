@@ -5,7 +5,7 @@ on:
 
 env:
   KERNEL_SOURCE: https://github.com/crdroidandroid/android_kernel_oneplus_sm8250.git
-  KERNEL_BRANCH: 16.0  # 如果用LineageOS官方源码，可改为 lineage-23.0
+  KERNEL_BRANCH: "16.0"  # 如果用LineageOS官方源码，可改为 lineage-23.0
   KERNEL_DEFCONFIG: vendor/kona-perf_defconfig
 
 jobs:
