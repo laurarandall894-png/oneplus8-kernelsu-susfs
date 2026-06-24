@@ -1,4 +1,4 @@
-name: Build crDroid 16.0 Kernel with KernelSU-Next (Official-Kprobes)
+name: Build crDroid 16.0 Kernel with KernelSU-Next (Error-Catcher)
 
 on:
   workflow_dispatch:
@@ -27,7 +27,6 @@ jobs:
       - name: Setup Clang
         run: |
           mkdir -p toolchains/clang
-          # 使用高度兼容老旧 4.19 内核进行高版本跨移植的 Clang 工具链
           curl -sL "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240306-release/Clang-19.0.0git-20240306.tar.gz" | \
             tar -xzf - -C toolchains/clang
           echo "$GITHUB_WORKSPACE/toolchains/clang/bin" >> $GITHUB_PATH
@@ -39,23 +38,17 @@ jobs:
       - name: Setup KernelSU-Next
         run: |
           cd kernel
-          # 修正：针对 4.19 这种 Non-GKI 内核，必须使用 stable 分支以确保稳定性
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s stable
 
       - name: Patch Mandatory Backports for KernelSU
         run: |
           cd kernel
-          echo "正在为 4.19 内核强制补齐 KernelSU 所需的 VFS 函数..."
-          
-          # 动态注入 path_umount，防止内核在编译 FS 层时因找不到函数直接炸服
           if ! grep -q "^int path_umount" fs/namespace.c; then
             echo -e "\nint path_umount(struct path *path, int flags) { return 0; }\nEXPORT_SYMBOL(path_umount);" >> fs/namespace.c
           fi
           if ! grep -q "int path_umount" fs/internal.h; then
             sed -i '/^extern void __init mnt_init/a int path_umount(struct path *path, int flags);' fs/internal.h
           fi
-          
-          # 动态注入 get_cred_rcu 
           if ! grep -q "get_cred_rcu" include/linux/cred.h; then
             LINE=$(grep -n "^static inline void put_cred" include/linux/cred.h | head -1 | cut -d: -f1)
             if [ -n "$LINE" ]; then
@@ -81,21 +74,27 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          # 修正：去除了底层强制断线的 LLVM_IAS=1，让 Clang 自动处理高通的旧版汇编
+          # 将编译日志重定向到文件，如果失败，自动抓取最后100行以及所有包含 error: 的关键行
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             LD=ld.lld AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            KCFLAGS="-w" KCPPFLAGS="-w"
+            KCFLAGS="-w" KCPPFLAGS="-w" > build.log 2>&1 || {
+              echo "=================================================="
+              echo "❌ 编译失败！正在自动提取最后 80 行日志..."
+              echo "=================================================="
+              tail -n 80 build.log
+              echo "=================================================="
+              echo "🔍 正在精准检索包含 'error:' 的致命错误行..."
+              echo "=================================================="
+              grep -i -C 2 "error:" build.log || true
+              exit 1
+            }
 
       - name: Package to Flashable ZIP
         run: |
           cd kernel
-          if [ ! -f "out/arch/arm64/boot/Image" ]; then
-            echo "错误：内核编译未成功生成 Image！"
-            exit 1
-          fi
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
           cd AnyKernel3
           rm -rf .git modules patch ramdisk
@@ -123,7 +122,7 @@ jobs:
           tag_name: ksu-next-${{ github.run_number }}
           name: KernelSU-Next 内核卡刷包 Build ${{ github.run_number }}
           body: |
-            ## 一加 8 系列 / 9R (Android 16) KernelSU-Next 稳定版内核
+            ## 一加 8 系列 / 9R (Android 16) KernelSU-Next 内核卡刷包
           files: ${{ env.ZIP_NAME }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
