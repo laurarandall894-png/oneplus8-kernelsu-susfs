@@ -27,6 +27,7 @@ jobs:
       - name: Setup Clang
         run: |
           mkdir -p toolchains/clang
+          # 使用高度兼容老旧 4.19 内核进行高版本跨移植的 Clang 工具链
           curl -sL "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240306-release/Clang-19.0.0git-20240306.tar.gz" | \
             tar -xzf - -C toolchains/clang
           echo "$GITHUB_WORKSPACE/toolchains/clang/bin" >> $GITHUB_PATH
@@ -38,7 +39,29 @@ jobs:
       - name: Setup KernelSU-Next
         run: |
           cd kernel
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          # 修正：针对 4.19 这种 Non-GKI 内核，必须使用 stable 分支以确保稳定性
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s stable
+
+      - name: Patch Mandatory Backports for KernelSU
+        run: |
+          cd kernel
+          echo "正在为 4.19 内核强制补齐 KernelSU 所需的 VFS 函数..."
+          
+          # 动态注入 path_umount，防止内核在编译 FS 层时因找不到函数直接炸服
+          if ! grep -q "^int path_umount" fs/namespace.c; then
+            echo -e "\nint path_umount(struct path *path, int flags) { return 0; }\nEXPORT_SYMBOL(path_umount);" >> fs/namespace.c
+          fi
+          if ! grep -q "int path_umount" fs/internal.h; then
+            sed -i '/^extern void __init mnt_init/a int path_umount(struct path *path, int flags);' fs/internal.h
+          fi
+          
+          # 动态注入 get_cred_rcu 
+          if ! grep -q "get_cred_rcu" include/linux/cred.h; then
+            LINE=$(grep -n "^static inline void put_cred" include/linux/cred.h | head -1 | cut -d: -f1)
+            if [ -n "$LINE" ]; then
+              sed -i "${LINE}i static inline const struct cred *get_cred_rcu(const struct cred *cred) { struct cred *nonconst_cred = (struct cred *) cred; if (!cred) return NULL; if (!atomic_inc_not_zero(&nonconst_cred->usage)) return NULL; return cred; }" include/linux/cred.h
+            fi
+          fi
 
       - name: Configure Kernel
         run: |
@@ -58,11 +81,11 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          # 核心修正：加入屏蔽警告参数，防止 compile-error 炸服
+          # 修正：去除了底层强制断线的 LLVM_IAS=1，让 Clang 自动处理高通的旧版汇编
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
-            LLVM_IAS=1 LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             KCFLAGS="-w" KCPPFLAGS="-w"
 
@@ -100,12 +123,7 @@ jobs:
           tag_name: ksu-next-${{ github.run_number }}
           name: KernelSU-Next 内核卡刷包 Build ${{ github.run_number }}
           body: |
-            ## 一加 8 系列 / 9R (Android 16) KernelSU-Next 纯净内核包
-            
-            - 采用 **Kprobes** 免断点注入技术，安全稳定。
-            
-            ### 刷入方法
-            直接在 TWRP / OrangeFox Recovery 中刷入该 ZIP 包，重启即可。
+            ## 一加 8 系列 / 9R (Android 16) KernelSU-Next 稳定版内核
           files: ${{ env.ZIP_NAME }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
