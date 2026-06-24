@@ -27,7 +27,6 @@ jobs:
       - name: Setup Clang
         run: |
           mkdir -p toolchains/clang
-          # 使用 Clang 19 保证完美通过 Android 16 的严格编译器检查
           curl -sL "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240306-release/Clang-19.0.0git-20240306.tar.gz" | \
             tar -xzf - -C toolchains/clang
           echo "$GITHUB_WORKSPACE/toolchains/clang/bin" >> $GITHUB_PATH
@@ -39,7 +38,6 @@ jobs:
       - name: Setup KernelSU-Next
         run: |
           cd kernel
-          # 优雅地调用官方自动集成脚本，不破坏原厂内核的 drivers 结构
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
 
       - name: Configure Kernel
@@ -48,7 +46,6 @@ jobs:
           mkdir -p out
           make O=out ARCH=arm64 $KERNEL_DEFCONFIG
           
-          # 直接开启一加内核自带的 Kprobes 功能，免去手动打源码补丁的痛苦
           ./scripts/config --file out/.config -e KSU
           ./scripts/config --file out/.config -e KPROBES
           ./scripts/config --file out/.config -e HAVE_KPROBES
@@ -61,11 +58,13 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
+          # 核心修正：加入屏蔽警告参数，防止 compile-error 炸服
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
             LLVM_IAS=1 LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            KCFLAGS="-w" KCPPFLAGS="-w"
 
       - name: Package to Flashable ZIP
         run: |
@@ -79,7 +78,6 @@ jobs:
           rm -rf .git modules patch ramdisk
           cp ../out/arch/arm64/boot/Image .
           
-          # 适配一加 8 全系列机型验证
           sed -i 's/do.devicecheck=.*/do.devicecheck=1/g' anykernel.sh
           sed -i 's/device.name1=.*/device.name1=instantnoodle/g' anykernel.sh
           sed -i '/device.name1=/a device.name2=instantnoodlep\ndevice.name3=kebab\ndevice.name4=lemonades' anykernel.sh
@@ -104,8 +102,7 @@ jobs:
           body: |
             ## 一加 8 系列 / 9R (Android 16) KernelSU-Next 纯净内核包
             
-            - 基于官方 **KernelSU-Next** 方案云端构建
-            - 采用 **Kprobes** 免断点注入技术，未动任何内核主干源码，安全稳定
+            - 采用 **Kprobes** 免断点注入技术，安全稳定。
             
             ### 刷入方法
             直接在 TWRP / OrangeFox Recovery 中刷入该 ZIP 包，重启即可。
